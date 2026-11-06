@@ -33,7 +33,6 @@ import java.util.Set;
 
 import com.drew.metadata.Directory;
 import com.drew.metadata.MetadataException;
-import com.drew.metadata.mp4.Mp4BoxHandler;
 import com.drew.metadata.mp4.Mp4Directory;
 import com.drew.metadata.mp4.media.Mp4SoundDirectory;
 import com.drew.metadata.mp4.media.Mp4VideoDirectory;
@@ -86,7 +85,7 @@ public class MP4Parser implements Parser {
     //an accepted MP4 box whose declared payload exceeds this is skipped rather than
     //loaded, so a crafted box size cannot force a multi-GB allocation. Cover art and
     //other legitimate metadata boxes are well under this; configurable if a real file
-    //needs more. See TikaMp4Reader and TIKA-4812.
+    //needs more. See TikaMp4Readers and TIKA-4812.
     private static final long DEFAULT_MAX_BOX_SIZE = 100L * 1024L * 1024L;
 
     //subtitles need random access: a stream declaring more than this is not buffered for
@@ -155,15 +154,9 @@ public class MP4Parser implements Parser {
         //read before the streaming walk, which consumes the stream; emitted after it, so a
         //limit hit while emitting cannot cost the container's metadata
         SubtitleTracks subtitles = extractSubtitles ? readSubtitles(tis, metadata, context) : null;
-        com.drew.metadata.Metadata mp4Metadata = new com.drew.metadata.Metadata();
-        Mp4BoxHandler boxHandler = new TikaMp4BoxHandler(mp4Metadata, metadata, xhtml, context);
-        //we used to spool to disk and then read from that with sannies parser.
-        //we think that drewnoakes' parser streams the data so we don't need to spool
-        //when the length is known (file-backed), pass it so a box that claims more than
-        //the input holds is skipped rather than allocated
-        long inputLength = tis.hasLength() ? tis.getLength() : -1;
+        com.drew.metadata.Metadata mp4Metadata;
         try {
-            TikaMp4Reader.extract(tis, boxHandler, maxBoxSize, inputLength, metadata, context);
+            mp4Metadata = TikaMp4Readers.extract(tis, maxBoxSize, metadata, xhtml, context);
         } catch (RuntimeSAXException e) {
             throw (SAXException) e.getCause();
         }

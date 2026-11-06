@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.SequenceInputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -34,8 +35,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import com.drew.lang.SequentialByteArrayReader;
-import com.drew.metadata.mp4.Mp4Context;
 import com.drew.metadata.mp4.Mp4Directory;
 import com.drew.metadata.mp4.media.Mp4MetaDirectory;
 import com.drew.metadata.mp4.media.Mp4SoundDirectory;
@@ -278,6 +277,12 @@ public class MP4ParserTest extends TikaTest {
         assertEquals("M4A", r.metadata.get(XMPDM.AUDIO_COMPRESSOR));
     }
 
+    //metadata-extractor reports a truncated input as its own EOFException subclass
+    private static boolean isTruncation(String warning) {
+        return warning.startsWith("java.io.EOFException")
+                || warning.startsWith("com.drew.imaging.isobmff.TruncatedInputException");
+    }
+
     // TIKA-4848: the box walk's own IOException is reported through the policy, not as a
     // bare message copied out of the library's error list
     @Test
@@ -285,7 +290,7 @@ public class MP4ParserTest extends TikaTest {
         String[] warnings = getXML("testMP4_truncated.m4a", new ParseContext()).metadata
                 .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING);
         assertTrue(Arrays.stream(warnings)
-                        .anyMatch(w -> w.startsWith("java.io.") && w.contains("\tat ")),
+                        .anyMatch(w -> isTruncation(w) && w.contains("\tat ")),
                 Arrays.toString(warnings));
 
         ParseContext redacted = new ParseContext();
@@ -293,7 +298,7 @@ public class MP4ParserTest extends TikaTest {
                 ExceptionReporting.Level.REDACTED, ExceptionReporting.UNLIMITED));
         String[] redactedWarnings = getXML("testMP4_truncated.m4a", redacted).metadata
                 .getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING);
-        assertTrue(Arrays.stream(redactedWarnings).anyMatch(w -> w.startsWith("java.io.")),
+        assertTrue(Arrays.stream(redactedWarnings).anyMatch(MP4ParserTest::isTruncation),
                 Arrays.toString(redactedWarnings));
         for (String w : redactedWarnings) {
             assertFalse(w.contains("\tat "), w);
@@ -562,10 +567,7 @@ public class MP4ParserTest extends TikaTest {
         bos.write(new byte[]{(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF});
         bos.write("mebx".getBytes(StandardCharsets.ISO_8859_1));
 
-        Metadata tikaMetadata = new Metadata();
-        TikaMp4MetaHandler handler = new TikaMp4MetaHandler(new com.drew.metadata.Metadata(),
-                new Mp4Context(), tikaMetadata, 740, 600);
-        handler.processSampleDescription(new SequentialByteArrayReader(bos.toByteArray()));
+        Metadata tikaMetadata = extract(track("meta", bos.toByteArray()), 1000L);
         assertNull(tikaMetadata.get(QuickTime.STILL_IMAGE_TIME));
     }
 
@@ -588,11 +590,8 @@ public class MP4ParserTest extends TikaTest {
             buf.put("wave".getBytes(StandardCharsets.ISO_8859_1));
         }
 
-        Metadata tikaMetadata = new Metadata();
-        TikaMp4SoundHandler handler = new TikaMp4SoundHandler(new com.drew.metadata.Metadata(),
-                new Mp4Context(), tikaMetadata);
         //must return without a StackOverflowError, and find no bitrate
-        handler.processBox("stsd", buf.array(), buf.array().length, new Mp4Context());
+        Metadata tikaMetadata = extract(track("soun", buf.array()), 10_000_000L);
         assertNull(tikaMetadata.get(Audio.BITRATE));
     }
 
@@ -620,13 +619,8 @@ public class MP4ParserTest extends TikaTest {
             buf.put("moov".getBytes(StandardCharsets.ISO_8859_1));
         }
         byte[] boxes = buf.array();
-        TikaMp4BoxHandler handler = new TikaMp4BoxHandler(new com.drew.metadata.Metadata(),
-                new Metadata(), new XHTMLContentHandler(new DefaultHandler(), new Metadata()),
-                new ParseContext());
         //must return without a StackOverflowError
-        assertDoesNotThrow(() ->
-                TikaMp4Reader.extract(new ByteArrayInputStream(boxes), handler, 1000L,
-                        boxes.length, new Metadata(), new ParseContext()));
+        assertDoesNotThrow(() -> extract(boxes, 1000L));
     }
 
     @Test
@@ -651,16 +645,112 @@ public class MP4ParserTest extends TikaTest {
         assertEquals("isom", majorBrand(bos.toByteArray(), 1000L));
     }
 
-    private static String majorBrand(byte[] boxes, long maxBoxSize) throws Exception {
-        com.drew.metadata.Metadata mp4Metadata = new com.drew.metadata.Metadata();
+    @Test
+    public void testBoxOver2GbDoesNotStopTheWalk() throws Exception {
+        long mdatSize = 3L * 1024 * 1024 * 1024 + 16;
+        ByteBuffer mdat = ByteBuffer.allocate(16);
+        mdat.putInt(1).put("mdat".getBytes(StandardCharsets.ISO_8859_1)).putLong(mdatSize);
+        byte[] ftyp = ftypBox();
+        long length = mdatSize + ftyp.length;
+        InputStream stream = new SequenceInputStream(Collections.enumeration(List.of(
+                new ByteArrayInputStream(mdat.array()), new ZeroInputStream(mdatSize - 16),
+                new ByteArrayInputStream(ftyp))));
         Metadata tikaMetadata = new Metadata();
-        XHTMLContentHandler xhtml = new XHTMLContentHandler(new DefaultHandler(), tikaMetadata);
-        TikaMp4BoxHandler handler =
-                new TikaMp4BoxHandler(mp4Metadata, tikaMetadata, xhtml, new ParseContext());
-        TikaMp4Reader.extract(new ByteArrayInputStream(boxes), handler, maxBoxSize, boxes.length,
-                tikaMetadata, new ParseContext());
+        com.drew.metadata.Metadata mp4Metadata = TikaMp4Readers.extract(stream, 1000L, tikaMetadata,
+                new XHTMLContentHandler(new DefaultHandler(), tikaMetadata), new ParseContext());
+        Mp4Directory dir = mp4Metadata.getFirstDirectoryOfType(Mp4Directory.class);
+        assertEquals("isom", dir == null ? null : dir.getString(Mp4Directory.TAG_MAJOR_BRAND));
+    }
+
+    private static final class ZeroInputStream extends InputStream {
+        private long remaining;
+
+        ZeroInputStream(long length) {
+            remaining = length;
+        }
+
+        @Override
+        public int read() {
+            if (remaining == 0) {
+                return -1;
+            }
+            remaining--;
+            return 0;
+        }
+
+        @Override
+        public long skip(long n) {
+            long skipped = Math.min(n, remaining);
+            remaining -= skipped;
+            return skipped;
+        }
+    }
+
+    private static String majorBrand(byte[] boxes, long maxBoxSize) throws Exception {
+        Metadata tikaMetadata = new Metadata();
+        com.drew.metadata.Metadata mp4Metadata = TikaMp4Readers.extract(new ByteArrayInputStream(boxes),
+                maxBoxSize, tikaMetadata, new XHTMLContentHandler(new DefaultHandler(), tikaMetadata),
+                new ParseContext());
         Mp4Directory dir = mp4Metadata.getFirstDirectoryOfType(Mp4Directory.class);
         return dir == null ? null : dir.getString(Mp4Directory.TAG_MAJOR_BRAND);
+    }
+
+    /**
+     * A meta/mdir udta whose ilst-search hits a sub-box declaring a length below
+     * the 8-byte header: the walk must record the problem rather than crash or
+     * mis-read. See TIKA-4812.
+     */
+    @Test
+    public void testIlstSearchMalformedSubBoxLength() throws Exception {
+        ByteBuffer buf = ByteBuffer.allocate(56); //big-endian by default
+        buf.putInt(56);
+        buf.put("moov".getBytes(StandardCharsets.ISO_8859_1));
+        buf.putInt(48);
+        buf.put("udta".getBytes(StandardCharsets.ISO_8859_1));
+        buf.putInt(40);                                 //meta box size (>4)
+        buf.put("meta".getBytes(StandardCharsets.ISO_8859_1));
+        buf.putInt(0);                                  //version and flags
+        buf.putInt(20);
+        buf.put("hdlr".getBytes(StandardCharsets.ISO_8859_1));
+        buf.putInt(0);
+        buf.putInt(0);
+        buf.put("mdir".getBytes(StandardCharsets.ISO_8859_1)); //handler subtype -> MDIR path
+        buf.putInt(4);                                  //malformed sub-box length (< 8)
+        buf.put("free".getBytes(StandardCharsets.ISO_8859_1));
+
+        Metadata tikaMetadata = new Metadata();
+        com.drew.metadata.Metadata mp4 = TikaMp4Readers.extract(new ByteArrayInputStream(buf.array()),
+                1000L, tikaMetadata, new XHTMLContentHandler(new DefaultHandler(), tikaMetadata),
+                new ParseContext());
+        assertTrue(mp4.hasErrors());
+    }
+    private static Metadata extract(byte[] boxes, long maxBoxSize) {
+        Metadata tikaMetadata = new Metadata();
+        TikaMp4Readers.extract(new ByteArrayInputStream(boxes), maxBoxSize, tikaMetadata,
+                new XHTMLContentHandler(new DefaultHandler(), tikaMetadata), new ParseContext());
+        return tikaMetadata;
+    }
+
+    /** A movie with one track of {@code handlerType} whose sample description is {@code stsd}. */
+    private static byte[] track(String handlerType, byte[] stsd) {
+        ByteBuffer hdlr = ByteBuffer.allocate(24);
+        hdlr.position(8);
+        hdlr.put(handlerType.getBytes(StandardCharsets.ISO_8859_1));
+        return box("moov", box("trak", box("mdia", box("hdlr", hdlr.array()),
+                box("minf", box("stbl", box("stsd", stsd))))));
+    }
+
+    private static byte[] box(String type, byte[]... payloads) {
+        int length = 8;
+        for (byte[] payload : payloads) {
+            length += payload.length;
+        }
+        ByteBuffer buf = ByteBuffer.allocate(length);
+        buf.putInt(length).put(type.getBytes(StandardCharsets.ISO_8859_1));
+        for (byte[] payload : payloads) {
+            buf.put(payload);
+        }
+        return buf.array();
     }
 
     private static byte[] ftypBox() {
