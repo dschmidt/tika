@@ -29,7 +29,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
-import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,6 +39,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.function.Predicate;
 
+import com.drew.lang.SequentialByteArrayReader;
 import org.apache.commons.io.function.IOSupplier;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -356,7 +356,7 @@ public class Mp4SubtitleExtractorTest extends TikaTest {
     public void testOversizedVideoRunDoesNotEndSubtitles() throws Exception {
         // a valid video trun over the 16 MB table limit, then a subtitle traf based at the moof
         byte[] four = Builder.sample("frag four".getBytes(StandardCharsets.UTF_8));
-        byte[] big = box("trun", u32(0), u32(0), new byte[Mp4SubtitleExtractor.MAX_TABLE_BYTES]);
+        byte[] big = box("trun", u32(0), u32(0), new byte[16 * 1024 * 1024]);
         byte[] moof = bigThenMine(big, 0, four.length);
         moof = bigThenMine(big, moof.length + 8, four.length);
         List<Emitted> docs = extract(cat(fragmented(5, 1), moof, box("mdat", four)),
@@ -385,15 +385,13 @@ public class Mp4SubtitleExtractorTest extends TikaTest {
         // a sample may declare 64 KB; only the 2-byte length and the text it names are read
         byte[] data = cat(Builder.sample(new byte[0]), new byte[0xFFFF],
                 Builder.sample("hi".getBytes(StandardCharsets.UTF_8)), new byte[0xFFFF]);
-        try (TikaInputStream tis = TikaInputStream.get(data);
-                CountingChannel ch = new CountingChannel(tis.getSeekableByteChannel())) {
-            SubtitleTracks budget = new SubtitleTracks(new Metadata(), new ParseContext());
-            assertEquals("", Mp4SubtitleExtractor.sampleText(ch, 0, 0xFFFF + 2, budget, false));
-            assertEquals(2, ch.read);
-            assertEquals("hi",
-                    Mp4SubtitleExtractor.sampleText(ch, 0xFFFF + 2, 0xFFFF + 2, budget, false));
-            assertEquals(2 + 4, ch.read);
-        }
+        SubtitleTracks budget = new SubtitleTracks(new Metadata(), new ParseContext());
+        SequentialByteArrayReader first = new SequentialByteArrayReader(data);
+        assertEquals("", Mp4SubtitleExtractor.sampleText(first, 0xFFFF + 2, budget, false));
+        assertEquals(2, first.getPosition());
+        SequentialByteArrayReader second = new SequentialByteArrayReader(data, 0xFFFF + 2);
+        assertEquals("hi", Mp4SubtitleExtractor.sampleText(second, 0xFFFF + 2, budget, false));
+        assertEquals(0xFFFF + 2 + 4, second.getPosition());
     }
 
     @Test
@@ -415,63 +413,8 @@ public class Mp4SubtitleExtractorTest extends TikaTest {
     }
 
     private static String sampleText(byte[] sample, boolean macText) throws IOException {
-        try (TikaInputStream tis = TikaInputStream.get(sample);
-                SeekableByteChannel ch = tis.getSeekableByteChannel()) {
-            return Mp4SubtitleExtractor.sampleText(ch, 0, sample.length,
-                    new SubtitleTracks(new Metadata(), new ParseContext()), macText);
-        }
-    }
-
-    private static final class CountingChannel implements SeekableByteChannel {
-        private final SeekableByteChannel delegate;
-        long read;
-
-        CountingChannel(SeekableByteChannel delegate) {
-            this.delegate = delegate;
-        }
-
-        @Override
-        public int read(ByteBuffer dst) throws IOException {
-            int n = delegate.read(dst);
-            read += Math.max(n, 0);
-            return n;
-        }
-
-        @Override
-        public int write(ByteBuffer src) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public long position() throws IOException {
-            return delegate.position();
-        }
-
-        @Override
-        public SeekableByteChannel position(long p) throws IOException {
-            delegate.position(p);
-            return this;
-        }
-
-        @Override
-        public long size() throws IOException {
-            return delegate.size();
-        }
-
-        @Override
-        public SeekableByteChannel truncate(long size) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean isOpen() {
-            return delegate.isOpen();
-        }
-
-        @Override
-        public void close() throws IOException {
-            delegate.close();
-        }
+        return Mp4SubtitleExtractor.sampleText(new SequentialByteArrayReader(sample), sample.length,
+                new SubtitleTracks(new Metadata(), new ParseContext()), macText);
     }
 
     @ParameterizedTest
@@ -825,8 +768,8 @@ public class Mp4SubtitleExtractorTest extends TikaTest {
         Metadata container = new Metadata();
         assertEquals(0, extract(cat(ftyp, mdat, box("moov", box("mvhd", new byte[100]), t2)),
                 container).size());
-        assertTrue(String.valueOf(container.get(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
-                .contains("subtitle samples"), container.toString());
+        assertTrue(Arrays.stream(container.getValues(TikaCoreProperties.TIKA_META_EXCEPTION_WARNING))
+                .anyMatch(w -> w.contains("subtitle samples")), container.toString());
     }
 
     private int tracksFromReopenable(byte[] mp4, CacheMemoryBudget budget)
