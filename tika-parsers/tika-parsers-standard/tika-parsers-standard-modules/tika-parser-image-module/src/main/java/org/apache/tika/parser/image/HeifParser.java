@@ -25,6 +25,13 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
+import com.drew.imaging.heif.HeifMetadataReader;
+import com.drew.imaging.isobmff.IsoBoxContext;
+import com.drew.imaging.isobmff.IsoBoxIterator;
+import com.drew.imaging.isobmff.IsoBoxReaders;
+import com.drew.imaging.isobmff.IsoItems;
+import com.drew.lang.SequentialReader;
+import com.drew.metadata.MetadataException;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.SAXException;
 
@@ -66,6 +73,32 @@ public class HeifParser extends AbstractImageParser {
         return SUPPORTED_TYPES;
     }
 
+    /** The first XMP item, as stored in the file. */
+    private static final class RawXmp {
+        final byte[] bytes;
+
+        RawXmp(byte[] bytes) {
+            this.bytes = bytes;
+        }
+    }
+
+    private static final IsoItems.ItemReader RAW_XMP = new IsoItems.ItemReader() {
+        @Override
+        public boolean accepts(IsoItems.Item item) {
+            return HeifMetadataReader.XMP_ITEM_READER.accepts(item);
+        }
+
+        @Override
+        public void readItem(IsoBoxContext file, IsoItems.Item item, SequentialReader data) throws IOException {
+            if (file.get(RawXmp.class) == null) {
+                file.put(RawXmp.class, new RawXmp(data.getBytes((int) data.available())));
+            }
+        }
+    };
+
+    private static final IsoBoxReaders WALK = HeifMetadataReader.compile(HeifMetadataReader.ALL_READERS,
+            Arrays.asList(HeifMetadataReader.EXIF_ITEM_READER, RAW_XMP));
+
     @Override
     void extractMetadata(InputStream stream, ContentHandler contentHandler, Metadata metadata,
                          ParseContext parseContext)
@@ -74,22 +107,36 @@ public class HeifParser extends AbstractImageParser {
         try {
             TikaInputStream tis = TikaInputStream.get(stream, tmp, metadata);
             File file = tis.getFile();   // spool so the file can be re-read below
-            // XMP first so it is canonical; metadata-extractor (EXIF/GPS) fills gaps.
-            // Locate the XMP item precisely via meta/iinf/iloc first, so an embedded resource's XMP
-            // (e.g. a motion-photo video in mdat) can't be attributed to the image; fall back to the
-            // byte scanner for packets not reachable through the boxes.
-            if (!HeifXmp.extract(file, metadata, parseContext)) {
+            com.drew.metadata.Metadata heif = new com.drew.metadata.Metadata();
+            IsoBoxContext root = HeifMetadataReader.newRoot(heif, null);
+            try (InputStream in = Files.newInputStream(file.toPath())) {
+                WALK.read(new IsoBoxIterator(in), root);
+            }
+            if (IsoBoxReaders.hasPendingRanges(root)) {
+                // item data before 'meta': read the spooled file again for that data only
+                try (InputStream in = Files.newInputStream(file.toPath())) {
+                    WALK.readRanges(new IsoBoxIterator(in), root);
+                }
+            }
+            // XMP first so it is canonical; metadata-extractor (EXIF/GPS) fills gaps. The XMP item
+            // is located via meta/iinf/iloc, so an embedded resource's XMP (e.g. a motion-photo
+            // video in mdat) is not attributed to the image; fall back to the byte scanner for
+            // packets not reachable through the boxes.
+            RawXmp xmp = root.get(RawXmp.class);
+            if (xmp != null) {
+                ImageXmp.extractRaw(xmp.bytes, metadata, parseContext);
+            } else {
                 ImageXmp.scanAndExtract(tis, metadata, parseContext);
             }
-            try (InputStream heif = Files.newInputStream(file.toPath())) {
+            try {
                 new ImageMetadataExtractor(metadata,
                         ImageMetadataConfig.resolve(parseContext, "heif-parser", defaultConfig))
-                        .parseHeif(heif);
+                        .handle(heif.getDirectories().iterator());
+            } catch (MetadataException e) {
+                throw new TikaException("Can't process Heif data", e);
             }
         } finally {
             tmp.dispose();
         }
     }
-
-
 }
