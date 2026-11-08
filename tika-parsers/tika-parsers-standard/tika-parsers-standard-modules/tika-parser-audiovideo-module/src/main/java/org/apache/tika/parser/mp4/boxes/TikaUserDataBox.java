@@ -17,9 +17,13 @@
 package org.apache.tika.parser.mp4.boxes;
 
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.drew.lang.SequentialReader;
+import com.drew.metadata.Tag;
 import com.drew.metadata.mov.metadata.QuickTimeMetadataDirectory;
 import org.xml.sax.SAXException;
 
@@ -45,10 +49,10 @@ import org.apache.tika.utils.TikaDates;
  */
 public class TikaUserDataBox {
 
-    /** The list atoms with text values, in the order they go into the document. */
-    private static final String[] TEXT_KEYS = {"©nam", "©too", "©ART", "aART",
-            "©wrt", "©alb", "©gen", "©day", "©cmt", "cprt", "keyw",
-            "©lyr", "ldes", "desc", "xid "};
+    /** The list atoms with text values that go into the metadata and the document, in file order. */
+    private static final Set<String> TEXT_KEYS = new HashSet<>(Arrays.asList("©nam",
+            "©too", "©ART", "aART", "©wrt", "©alb", "©gen", "©day",
+            "©cmt", "cprt", "keyw", "©lyr", "ldes", "desc", "xid "));
 
     private final AtomicInteger coverCount = new AtomicInteger();
     private final Metadata metadata;
@@ -66,8 +70,11 @@ public class TikaUserDataBox {
     public void addMetadata(com.drew.metadata.Metadata mp4Metadata) {
         for (QuickTimeMetadataDirectory directory
                 : mp4Metadata.getDirectoriesOfType(QuickTimeMetadataDirectory.class)) {
-            for (String key : TEXT_KEYS) {
-                String value = string(directory, key);
+            // the directory lists its tags in the order the file had them
+            for (Tag tag : directory.getTags()) {
+                String key = QuickTimeMetadataDirectory.getKey(tag.getTagType());
+                String value = key != null && TEXT_KEYS.contains(key)
+                        ? directory.getString(tag.getTagType()) : null;
                 if (value != null) {
                     try {
                         addMetadata(key, value);
@@ -96,11 +103,6 @@ public class TikaUserDataBox {
                 metadata.set(XMPDM.COMPILATION, compilation);
             }
         }
-    }
-
-    private static String string(QuickTimeMetadataDirectory directory, String key) {
-        Integer tag = QuickTimeMetadataDirectory.getTagType(key);
-        return tag == null || !directory.containsTag(tag) ? null : directory.getString(tag);
     }
 
     private static int[] numberAndCount(QuickTimeMetadataDirectory directory, String key) {
