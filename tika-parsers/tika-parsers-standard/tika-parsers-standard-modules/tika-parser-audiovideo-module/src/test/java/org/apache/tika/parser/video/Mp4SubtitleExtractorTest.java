@@ -436,9 +436,16 @@ public class Mp4SubtitleExtractorTest extends TikaTest {
     }
 
     @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    public void testCorruptedBytes(boolean fragmented) throws Exception {
-        byte[] good = fragmented ? fragmented(5, 1) : new Builder().build(true);
+    @ValueSource(strings = {"text", "fragmented", "avc", "hevc", "c608", "avcFragments"})
+    public void testCorruptedBytes(String kind) throws Exception {
+        byte[] good = switch (kind) {
+            case "fragmented" -> fragmented(5, 1);
+            case "avc" -> captionedAt(Integer.MAX_VALUE, 20);
+            case "hevc" -> videoMp4("hvc1", hvcC(), hevcHello(), null, 1000);
+            case "c608" -> videoMp4("c608", new byte[0], c608Hello(0), null, 1000);
+            case "avcFragments" -> captionsInFragments(2000);
+            default -> new Builder().build(true);
+        };
         // -Dtika.test.seed=<seed> replays a failure
         long seed = Long.getLong("tika.test.seed", new Random().nextLong());
         Random r = new Random(seed);
@@ -457,7 +464,7 @@ public class Mp4SubtitleExtractorTest extends TikaTest {
                 bad = Arrays.copyOf(bad, r.nextInt(bad.length));
             }
             try {
-                extract(bad, new Metadata());
+                extract(bad, PROBE);
             } catch (RuntimeException | Error e) {
                 throw new AssertionError("seed=" + seed + " iteration=" + i, e);
             }
