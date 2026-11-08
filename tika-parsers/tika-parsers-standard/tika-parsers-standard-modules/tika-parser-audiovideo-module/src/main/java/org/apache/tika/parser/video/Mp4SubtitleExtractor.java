@@ -34,6 +34,7 @@ import com.drew.imaging.isobmff.IsoBox;
 import com.drew.imaging.isobmff.IsoBoxContext;
 import com.drew.imaging.isobmff.IsoBoxReaders;
 import com.drew.imaging.isobmff.IsoInput;
+import com.drew.imaging.isobmff.IsoLanguageCode;
 import com.drew.imaging.isobmff.IsoSamples;
 import com.drew.imaging.isobmff.IsoStandardLayout;
 import com.drew.lang.SequentialReader;
@@ -217,42 +218,9 @@ final class Mp4SubtitleExtractor {
     }
 
     // QuickTime Macintosh language codes 0-94 and 128-150 (Script Manager langXXX), as ISO 639-2/T
-    private static final String[] MAC_LANGUAGES = {
-        "eng", "fra", "deu", "ita", "nld", "swe", "spa", "dan", "por", "nor",
-        "heb", "jpn", "ara", "fin", "ell", "isl", "mlt", "tur", "hrv", "zho",
-        "urd", "hin", "tha", "kor", "lit", "pol", "hun", "est", "lav", "smi",
-        "fao", "fas", "rus", "zho", "nld", "gle", "sqi", "ron", "ces", "slk",
-        "slv", "yid", "srp", "mkd", "bul", "ukr", "bel", "uzb", "kaz", "aze",
-        "aze", "hye", "kat", "ron", "kir", "tgk", "tuk", "mon", "mon", "pus",
-        "kur", "kas", "snd", "bod", "nep", "san", "mar", "ben", "asm", "guj",
-        "pan", "ori", "mal", "kan", "tam", "tel", "sin", "mya", "khm", "lao",
-        "vie", "ind", "tgl", "msa", "msa", "amh", "tir", "orm", "som", "swa",
-        "kin", "run", "nya", "mlg", "epo", null, null, null, null, null,
-        null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null, null, null, null, null, "cym", "eus",
-        "cat", "lat", "que", "grn", "aym", "tat", "uig", "dzo", "jav", "sun",
-        "glg", "afr", "bre", "iku", "gla", "glv", "gle", "ton", "grc", "kal",
-        "aze"
-    };
-
-    // ISO 639-2/T packed as three 5-bit letters; below 0x400 is a QuickTime Mac code
+    /** The track's ISO 639-2 code, or null for none: {@code und} says nothing either. */
     static String language(int packed) {
-        if (packed < 0x400) {
-            return packed < MAC_LANGUAGES.length ? MAC_LANGUAGES[packed] : null;
-        }
-        if (packed == 0x7FFF) {
-            return null;
-        }
-        char[] c = new char[3];
-        for (int i = 0; i < 3; i++) {
-            int v = (packed >> (10 - 5 * i)) & 0x1F;
-            if (v < 1 || v > 26) {
-                return null;
-            }
-            c[i] = (char) (v + 0x60);
-        }
-        String lang = new String(c);
-        return lang.equals("und") ? null : lang;
+        String code = IsoLanguageCode.decode(packed);
+        return "und".equals(code) ? null : code;
     }
 }
