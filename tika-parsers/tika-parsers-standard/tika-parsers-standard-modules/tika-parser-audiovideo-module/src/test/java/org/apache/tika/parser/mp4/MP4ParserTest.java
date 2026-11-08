@@ -480,12 +480,13 @@ public class MP4ParserTest extends TikaTest {
     }
 
     @Test
-    public void testLastSampleEntryWins() throws Exception {
-        //a track with two sample entries, AAC then AC-3: like the bitrate, the
-        //fourcc is a per-stream value and reflects the last entry
+    public void testFirstSampleEntryNamesTheCodec() throws Exception {
+        //a track with two sample entries, AAC then AC-3: the fourcc is the first
+        //entry's, as ExifTool and ffprobe report it; the bitrate is read from
+        //every entry's esds, so the last one with an esds wins
         Metadata metadata = new Metadata();
         getText("testMP4_twoSampleEntries.m4a", metadata);
-        assertEquals("ac-3", metadata.get(Audio.FOURCC));
+        assertEquals("mp4a", metadata.get(Audio.FOURCC));
         assertEquals("128000", metadata.get(Audio.BITRATE));
         assertNull(metadata.get(Audio.HAS_DRM));
     }

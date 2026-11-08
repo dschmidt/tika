@@ -33,12 +33,12 @@ import com.drew.imaging.isobmff.IsoBoxContext;
 import com.drew.imaging.isobmff.IsoBoxIterator;
 import com.drew.imaging.isobmff.IsoBoxReader;
 import com.drew.imaging.isobmff.IsoBoxReaders;
-import com.drew.imaging.isobmff.IsoStandardLayout;
 import com.drew.imaging.mp4.Mp4MetadataReader;
 import com.drew.lang.Rational;
 import com.drew.metadata.Directory;
 import com.drew.metadata.mp4.LivePhotoDirectory;
 import com.drew.metadata.mp4.Mp4Directory;
+import com.drew.metadata.mp4.media.Mp4MediaDirectory;
 import com.drew.metadata.mp4.media.Mp4SoundDirectory;
 import com.drew.metadata.mp4.media.Mp4VideoDirectory;
 
@@ -54,11 +54,11 @@ import org.apache.tika.parser.mp4.boxes.TikaUserDataBox;
 import org.apache.tika.sax.XHTMLContentHandler;
 
 /**
- * Reads an MP4 or QuickTime file with metadata-extractor's MP4 readers, plus the few readers
+ * Reads an MP4 or QuickTime file with metadata-extractor's MP4 readers, plus the two readers
  * for what Tika wants beyond their directories: every QuickTime {@code keys} item verbatim
- * under the {@code mp4:} prefix, cover art as embedded documents, and the sample entry types.
- * Bitrates, the location, the Live Photo still image time and the iTunes list come out of the
- * directories after the read.
+ * under the {@code mp4:} prefix, and cover art as embedded documents. The streams' codecs,
+ * protection and bitrates, the location, the Live Photo still image time and the iTunes list
+ * come out of the directories after the read.
  */
 final class TikaMp4Readers {
 
@@ -72,7 +72,6 @@ final class TikaMp4Readers {
             KeyPrefix.file("mp4:", "QuickTime 'keys' box item names, read verbatim from file bytes");
 
     private static final String TRACK = "moov/trak/";
-    private static final String SAMPLE_ENTRY = TRACK + "mdia/minf/stbl/stsd/*";
     private static final String[] USER_DATA = {"udta/", "moov/udta/", TRACK + "udta/"};
 
     /** The compiled readers by the most bytes a reader may read into memory, which the parser configures. */
@@ -118,8 +117,6 @@ final class TikaMp4Readers {
         readers.add(IsoBoxReaders.on(TikaMp4Readers::readQuickTimeItem,
                 "moov/meta/ilst/*", TRACK + "meta/ilst/*"));
         readers.add(IsoBoxReaders.on(TikaMp4Readers::readCoverArt, paths("meta/ilst/covr")));
-        readers.add(IsoBoxReaders.on(TikaMp4Readers::readSampleEntry, SAMPLE_ENTRY));
-        readers.add(IsoBoxReaders.on(TikaMp4Readers::readOriginalFormat, SAMPLE_ENTRY + "/sinf/frma"));
         return readers;
     }
 
@@ -136,15 +133,21 @@ final class TikaMp4Readers {
     }
 
     /**
-     * What the directories say about the streams: the average bitrates of the sound and video
-     * tracks (the last track of a kind wins, as for the fourcc), and the Live Photo still image
-     * time in microseconds, 0 when the still is the first frame.
+     * What the directories say about the streams: the fourcc of the first sample entry (the
+     * original format of a protected one), whether a sound track is protected, the average
+     * bitrates (the last track of a kind wins), and the Live Photo still image time in
+     * microseconds, 0 when the still is the first frame.
      */
     private static void addStreams(com.drew.metadata.Metadata mp4Metadata, Metadata metadata) {
         for (Directory directory : mp4Metadata.getDirectories()) {
             if (directory instanceof Mp4SoundDirectory) {
+                setFourCC(directory, Mp4SoundDirectory.TAG_AUDIO_FORMAT_RAW, Audio.FOURCC, metadata);
+                if (directory.containsTag(Mp4MediaDirectory.TAG_PROTECTION_SCHEME)) {
+                    metadata.set(Audio.HAS_DRM, true);
+                }
                 addBitrate(directory, Mp4SoundDirectory.TAG_AVERAGE_BITRATE, Audio.BITRATE, metadata);
             } else if (directory instanceof Mp4VideoDirectory) {
+                setFourCC(directory, Mp4VideoDirectory.TAG_COMPRESSION_TYPE_RAW, Video.FOURCC, metadata);
                 addBitrate(directory, Mp4VideoDirectory.TAG_AVERAGE_BITRATE, Video.BITRATE, metadata);
             } else if (directory instanceof LivePhotoDirectory) {
                 Rational time = directory.getRational(LivePhotoDirectory.TAG_STILL_IMAGE_TIME);
@@ -157,40 +160,31 @@ final class TikaMp4Readers {
         }
     }
 
+    /** A four-character code without its padding, and only when it is printable ASCII. */
+    private static void setFourCC(Directory directory, int tag, Property property, Metadata metadata) {
+        String code = directory.getString(tag);
+        if (code == null) {
+            return;
+        }
+        int length = code.length();
+        while (length > 0 && code.charAt(length - 1) == ' ') {
+            length--;
+        }
+        for (int i = 0; i < length; i++) {
+            if (code.charAt(i) < 0x20 || code.charAt(i) > 0x7E) {
+                return;
+            }
+        }
+        if (length > 0) {
+            metadata.set(property, code.substring(0, length));
+        }
+    }
+
     private static void addBitrate(Directory directory, int tag, Property property,
                                    Metadata metadata) {
         Long bitrate = directory.getLongObject(tag);
         if (bitrate != null && bitrate > 0 && bitrate <= Integer.MAX_VALUE) {
             metadata.set(property, bitrate.intValue());
-        }
-    }
-
-    private static void readOriginalFormat(IsoBoxContext box) throws IOException {
-        String entry = box.ancestor("sinf").parent().box().type;
-        if (Mp4SampleEntries.isProtected(entry) && box.box().payloadSize >= 4) {
-            setFourCC(box, Mp4SampleEntries.printableFourCC(
-                    box.payload().getString(4, StandardCharsets.ISO_8859_1)));
-        }
-    }
-
-    private static void readSampleEntry(IsoBoxContext box) {
-        String fourCC = box.box().type;
-        if ("soun".equals(IsoStandardLayout.handlerType(box))
-                && Mp4SampleEntries.isProtected(fourCC)) {
-            metadata(box).set(Audio.HAS_DRM, true);
-        }
-        setFourCC(box, Mp4SampleEntries.printableFourCC(fourCC));
-    }
-
-    private static void setFourCC(IsoBoxContext box, String fourCC) {
-        String handler = IsoStandardLayout.handlerType(box);
-        if (fourCC == null) {
-            return;
-        }
-        if ("soun".equals(handler)) {
-            metadata(box).set(Audio.FOURCC, fourCC);
-        } else if ("vide".equals(handler)) {
-            metadata(box).set(Video.FOURCC, fourCC);
         }
     }
 
