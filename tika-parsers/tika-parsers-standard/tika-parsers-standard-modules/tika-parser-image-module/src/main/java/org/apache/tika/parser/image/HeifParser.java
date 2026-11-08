@@ -19,7 +19,6 @@ package org.apache.tika.parser.image;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -27,8 +26,8 @@ import java.util.Set;
 
 import com.drew.imaging.heif.HeifMetadataReader;
 import com.drew.imaging.isobmff.IsoBoxContext;
-import com.drew.imaging.isobmff.IsoBoxIterator;
 import com.drew.imaging.isobmff.IsoBoxReaders;
+import com.drew.imaging.isobmff.IsoInput;
 import com.drew.imaging.isobmff.IsoItems;
 import com.drew.lang.SequentialReader;
 import com.drew.metadata.MetadataException;
@@ -106,18 +105,10 @@ public class HeifParser extends AbstractImageParser {
         TemporaryResources tmp = new TemporaryResources();
         try {
             TikaInputStream tis = TikaInputStream.get(stream, tmp, metadata);
-            File file = tis.getFile();   // spool so the file can be re-read below
+            File file = tis.getFile();   // spool: item data before 'meta' is read by position
             com.drew.metadata.Metadata heif = new com.drew.metadata.Metadata();
             IsoBoxContext root = HeifMetadataReader.newRoot(heif, null);
-            try (InputStream in = Files.newInputStream(file.toPath())) {
-                WALK.read(new IsoBoxIterator(in), root);
-            }
-            if (IsoBoxReaders.hasPendingRanges(root)) {
-                // item data before 'meta': read the spooled file again for that data only
-                try (InputStream in = Files.newInputStream(file.toPath())) {
-                    WALK.readRanges(new IsoBoxIterator(in), root);
-                }
-            }
+            WALK.read(IsoInput.of(file), root);
             // XMP first so it is canonical; metadata-extractor (EXIF/GPS) fills gaps. The XMP item
             // is located via meta/iinf/iloc, so an embedded resource's XMP (e.g. a motion-photo
             // video in mdat) is not attributed to the image; fall back to the byte scanner for

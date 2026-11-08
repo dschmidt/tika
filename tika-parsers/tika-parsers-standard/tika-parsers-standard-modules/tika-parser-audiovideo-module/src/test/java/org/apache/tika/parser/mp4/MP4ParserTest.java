@@ -597,14 +597,22 @@ public class MP4ParserTest extends TikaTest {
 
     @Test
     public void testOversizedBoxIsSkippedNotAllocated() throws Exception {
-        //an accepted box whose declared payload exceeds the cap must be skipped (a
-        //lazy stream advance, no allocation) rather than read into a byte[]; the
-        //metadata-extractor reader would instead do new byte[(int) boxSize - 8].
-        //Use ftyp, an accepted top-level box with an observable side effect (the
-        //major brand). Payload is 16 bytes. TIKA-4812
+        //a reader that takes a whole payload into memory (XMP_) is refused above
+        //the cap and the box reported, so a box claiming a giant size costs no
+        //allocation; a reader that streams its fields (ftyp) is not affected by
+        //the cap. TIKA-4812
+        byte[] xmp = box("XMP_", new byte[200]);
         byte[] ftyp = ftypBox();
-        assertNull(majorBrand(ftyp, 8L));            //cap below the payload -> skipped
-        assertEquals("isom", majorBrand(ftyp, 1000L)); //cap above it -> read and processed
+        byte[] file = ByteBuffer.allocate(xmp.length + ftyp.length).put(xmp).put(ftyp).array();
+        Metadata tikaMetadata = new Metadata();
+        com.drew.metadata.Metadata capped = TikaMp4Readers.extract(new ByteArrayInputStream(file),
+                8L, tikaMetadata, new XHTMLContentHandler(new DefaultHandler(), tikaMetadata),
+                new ParseContext());
+        assertEquals("isom", capped.getFirstDirectoryOfType(Mp4Directory.class)
+                .getString(Mp4Directory.TAG_MAJOR_BRAND));
+        assertNull(capped.getFirstDirectoryOfType(com.drew.metadata.xmp.XmpDirectory.class));
+        assertTrue(capped.hasErrors());
+        assertEquals("isom", majorBrand(file, 1000L)); //cap above it -> read and processed
     }
 
     @Test

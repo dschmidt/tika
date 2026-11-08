@@ -18,8 +18,6 @@ package org.apache.tika.parser.video;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
-import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -34,8 +32,8 @@ import java.util.TreeMap;
 
 import com.drew.imaging.isobmff.IsoBox;
 import com.drew.imaging.isobmff.IsoBoxContext;
-import com.drew.imaging.isobmff.IsoBoxIterator;
 import com.drew.imaging.isobmff.IsoBoxReaders;
+import com.drew.imaging.isobmff.IsoInput;
 import com.drew.imaging.isobmff.IsoSamples;
 import com.drew.imaging.isobmff.IsoStandardLayout;
 import com.drew.lang.SequentialReader;
@@ -86,14 +84,8 @@ final class Mp4SubtitleExtractor {
         IsoBoxContext root = IsoBoxContext.root(new com.drew.metadata.Metadata(),
                 (box, message, cause) -> out.warn(warning(box, message, cause)));
         root.put(Cues.class, cues);
-        try (SeekableByteChannel ch = tis.getSeekableByteChannel()) {
-            WALK.read(new IsoBoxIterator(Channels.newInputStream(ch)), root);
-            if (IsoBoxReaders.hasPendingRanges(root) && !out.isSpent()) {
-                // samples ahead of moov: read the file again for them only
-                ch.position(0);
-                WALK.readRanges(new IsoBoxIterator(Channels.newInputStream(ch)), root);
-            }
-            IsoBoxReaders.reportPendingRanges(root);
+        try {
+            WALK.read(IsoInput.of(tis.getFile()), root);
         } catch (IOException e) {
             out.damaged(e);
         }

@@ -229,7 +229,7 @@ public class MP4Parser implements Parser {
                 processMp4SoundDirectory((Mp4SoundDirectory) mp4Directory, metadata);
             } else if (mp4Directory instanceof Mp4VideoDirectory) {
                 processMp4VideoDirectory((Mp4VideoDirectory) mp4Directory, metadata);
-            } else {
+            } else if (mp4Directory.getClass() == Mp4Directory.class) {
                 processActualMp4Directory(mp4Directory, metadata);
             }
         }
@@ -318,6 +318,7 @@ public class MP4Parser implements Parser {
 
         addDouble(mp4Directory, metadata, Mp4Directory.TAG_LATITUDE, TikaCoreProperties.LATITUDE);
         addDouble(mp4Directory, metadata, Mp4Directory.TAG_LONGITUDE, TikaCoreProperties.LONGITUDE);
+        addDouble(mp4Directory, metadata, Mp4Directory.TAG_ALTITUDE, TikaCoreProperties.ALTITUDE);
         addInt(mp4Directory, metadata, Mp4Directory.TAG_TIME_SCALE, XMPDM.AUDIO_SAMPLE_RATE);
     }
 

@@ -19,7 +19,6 @@ package org.apache.tika.parser.mp4;
 import java.nio.charset.StandardCharsets;
 
 
-import org.apache.tika.io.EndianUtils;
 
 /**
  * Walks the sample entries of a SampleDescriptionBox ('stsd') payload, shared
@@ -77,56 +76,4 @@ final class Mp4SampleEntries {
      * by a DecoderConfigDescriptor (tag 0x04) whose fixed fields end with the
      * maximum and average bitrates.
      */
-    static int readEsdsAverageBitRate(byte[] b) {
-        int pos = 0;
-        int end = b.length;
-        //4 bytes version and flags, then the ES descriptor
-        pos += 4;
-        if (pos >= end || b[pos] != 0x03) {
-            return 0;
-        }
-        pos = skipDescriptorLength(b, pos + 1);
-        if (pos + 3 > end) {
-            return 0;
-        }
-        //ES_ID (2 bytes), then a flags/priority byte announcing the
-        //optional stream dependence, URL and OCR fields
-        int flags = b[pos + 2] & 0xFF;
-        pos += 3;
-        if ((flags & 0x80) != 0) {
-            pos += 2;
-        }
-        if ((flags & 0x40) != 0) {
-            if (pos >= end) {
-                return 0;
-            }
-            pos += 1 + (b[pos] & 0xFF);
-        }
-        if ((flags & 0x20) != 0) {
-            pos += 2;
-        }
-        if (pos >= end || b[pos] != 0x04) {
-            return 0;
-        }
-        pos = skipDescriptorLength(b, pos + 1);
-        //object type (1), stream type (1), buffer size (3), max bitrate (4)
-        pos += 9;
-        if (pos + 4 > end) {
-            return 0;
-        }
-        long averageBitRate = EndianUtils.getUIntBE(b, pos);
-        return averageBitRate > 0 && averageBitRate <= Integer.MAX_VALUE
-                ? (int) averageBitRate : 0;
-    }
-
-    /**
-     * Skips a descriptor's variable length encoding (bytes with the high bit
-     * set continue the length) and returns the position of the payload.
-     */
-    private static int skipDescriptorLength(byte[] b, int pos) {
-        while (pos < b.length && (b[pos] & 0x80) != 0) {
-            pos++;
-        }
-        return pos + 1;
-    }
 }
